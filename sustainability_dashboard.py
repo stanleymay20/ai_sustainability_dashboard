@@ -6,13 +6,19 @@ import pandas as pd
 from datetime import datetime, timedelta
 from sklearn.linear_model import LinearRegression
 import numpy as np
+from dotenv import load_dotenv
+import os
+import plotly.express as px
+
+# Load environment variables
+load_dotenv()
 
 # API Keys
-OPENWEATHER_API = "e6abd7c0126034673af84df1967d9d59"  # OpenWeatherMap API Key
-CARBON_INTERFACE_API = "nZKI00HqSiFTFaaKnbAzw"        # Carbon Interface API Key
-CHARGEMAP_API = "316788dd-6ba6-47ed-9437-5853c1f313b9"  # Open Charge Map API Key
-AQICN_API = "1310913ccc485dacb27c50b206392aa070200922"  # AQICN API Key
-ELECTRICITYMAP_API = "SxD5EyzABwTFZ"                   # Electricity Maps API Key
+OPENWEATHER_API = os.getenv("OPENWEATHER_API")
+CARBON_INTERFACE_API = os.getenv("CARBON_INTERFACE_API")
+CHARGEMAP_API = os.getenv("CHARGEMAP_API")
+AQICN_API = os.getenv("AQICN_API")
+ELECTRICITYMAP_API = os.getenv("ELECTRICITYMAP_API")
 
 # Pollutant Names Mapping
 POLLUTANT_NAMES = {
@@ -150,24 +156,49 @@ def main():
         pollution = get_openweather_pollution(lat, lon)
         if pollution:
             st.write(f"Air Quality Index (AQI): {pollution['main']['aqi']}")
+            data = []
             for key, value in pollution['components'].items():
                 full_name = POLLUTANT_NAMES.get(key, key)
-                st.write(f"- **{full_name}**: {value} µg/m³")
+                data.append({"Pollutant": full_name, "Concentration (µg/m³)": value})
+            df = pd.DataFrame(data)
+            st.dataframe(df)
+            # Visualization with Plotly
+            fig = px.bar(df, x="Pollutant", y="Concentration (µg/m³)", title="Pollutant Concentrations")
+            st.plotly_chart(fig)
         
+        st.subheader("2. Real-Time AQI and Recommendations")
+        aqi = get_aqicn_aqi(city)
+        if aqi:
+            st.write(f"Air Quality Index (AQI) in {city}: {aqi}")
+            if aqi <= 50:
+                st.success("Air quality is good. Enjoy your day outside!")
+            elif aqi <= 100:
+                st.warning("Air quality is moderate. Sensitive groups should take precautions.")
+            else:
+                st.error("Air quality is unhealthy. Limit outdoor activities.")
+
         st.subheader("3. Carbon Intensity of Electricity Grid")
         carbon_intensity = get_electricity_carbon_intensity(zone)
         if carbon_intensity:
             st.success(f"Carbon Intensity in {zone}: {carbon_intensity} gCO₂/kWh")
+            # Visualization
+            fig = px.pie(values=[carbon_intensity, 1000-carbon_intensity], 
+                         names=["Carbon Intensity", "Other"], 
+                         title="Carbon Intensity Proportion")
+            st.plotly_chart(fig)
 
         st.subheader("4. Carbon Emissions from Vehicle Travel")
         if vehicle_model_id:
             emissions = calculate_vehicle_emissions(distance, vehicle_model_id)
             if emissions:
                 st.success(f"CO₂ Emissions for {distance} km in {selected_vehicle}: {emissions:.2f} kg CO₂")
+                # Visualization
+                fig = px.bar(x=[selected_vehicle], y=[emissions], title="CO₂ Emissions", labels={"x": "Vehicle", "y": "Emissions (kg CO₂)"})
+                st.plotly_chart(fig)
         else:
             st.error("Please select a valid vehicle model to calculate emissions.")
 
-        st.subheader("6. Nearby EV Charging Stations")
+        st.subheader("5. Nearby EV Charging Stations")
         ev_stations = get_ev_charging_stations(lat, lon)
         if ev_stations:
             st.write("Nearby EV Charging Stations:")
@@ -179,6 +210,8 @@ def main():
                     icon=folium.Icon(color="green", icon="bolt")
                 ).add_to(m)
             folium_static(m)
+        else:
+            st.write("No nearby EV charging stations found.")
 
 if __name__ == "__main__":
     main()

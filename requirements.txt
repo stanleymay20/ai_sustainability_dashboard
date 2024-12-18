@@ -3,3 +3,7 @@ requests==2.31.0
 folium==0.14.0
 pandas==2.0.3
 streamlit-folium==0.14.0
+pandas
+streamlit-folium
+numpy
+scikit-learn

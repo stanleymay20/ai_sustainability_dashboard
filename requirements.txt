@@ -9,3 +9,4 @@ numpy
 scikit-learn
 python-dotenv
 plotly
+statsmodelsstatsmodels

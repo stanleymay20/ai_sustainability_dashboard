@@ -1,14 +1,18 @@
+
+import pandas as pd
+import numpy as np
 import requests
 import streamlit as st
 import folium
-from streamlit_folium import folium_static
-import pandas as pd
-from datetime import datetime, timedelta
-from sklearn.linear_model import LinearRegression
-import numpy as np
-from dotenv import load_dotenv
 import os
 import plotly.express as px
+from datetime import datetime, timedelta
+from sklearn.linear_model import LinearRegression
+from sklearn.cluster import KMeans
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from streamlit_folium import folium_static
+from dotenv import load_dotenv
+
 
 # Load environment variables
 load_dotenv()
@@ -71,6 +75,36 @@ def get_electricity_carbon_intensity(zone):
     except Exception as e:
         st.error(f"Exception: {e}")
     return None
+# Fetch Historical Pollution Data
+def fetch_historical_pollution(lat, lon):
+    try:
+        end_time = int(datetime.now().timestamp())
+        start_time = int((datetime.now() - timedelta(days=7)).timestamp())
+        url = f"http://api.openweathermap.org/data/2.5/air_pollution/history?lat={lat}&lon={lon}&start={start_time}&end={end_time}&appid={OPENWEATHER_API}"
+        response = requests.get(url)
+        if response.ok:
+            return response.json().get("list", [])
+        else:
+            st.error(f"Error fetching historical pollution data: {response.status_code} - {response.text}")
+    except Exception as e:
+        st.error(f"Exception: {e}")
+    return []
+
+# Preprocess Time Series Data
+def preprocess_time_series_data(historical_data):
+    timestamps = []
+    pm25_values = []
+    for record in historical_data:
+        timestamps.append(datetime.utcfromtimestamp(record['dt']))
+        pm25_values.append(record['components']['pm2_5'])
+    return pd.DataFrame({"timestamp": timestamps, "pm2_5": pm25_values})
+
+# Predict Pollution Trends
+def predict_trends(dataframe):
+    model = ExponentialSmoothing(dataframe['pm2_5'], seasonal='add', seasonal_periods=7)
+    model_fit = model.fit()
+    forecast = model_fit.forecast(steps=7)
+    return forecast
 
 # Fetch Vehicle Models from Carbon Interface
 def get_vehicle_models():
@@ -129,6 +163,22 @@ def get_ev_charging_stations(lat, lon, max_results=5):
     except Exception as e:
         st.error(f"Exception: {e}")
     return None
+# Clustering for High-Emission Zones
+def create_pollution_data(points):
+    data = []
+    for point in points:
+        lat, lon = point
+        pollution = get_openweather_pollution(lat, lon)
+        if pollution:
+            pm25 = pollution['components']['pm2_5']
+            data.append({"latitude": lat, "longitude": lon, "pm2_5": pm25})
+    return pd.DataFrame(data)
+
+def apply_clustering(dataframe, n_clusters=3):
+    kmeans = KMeans(n_clusters=n_clusters)
+    dataframe['cluster'] = kmeans.fit_predict(dataframe[['latitude', 'longitude', 'pm2_5']])
+    return dataframe, kmeans.cluster_centers_
+
 
 # Main Dashboard
 def main():
@@ -141,7 +191,9 @@ def main():
     lon = st.number_input("Longitude:", value=13.405)
     zone = st.text_input("Electricity Zone Code (e.g., DE):", "DE")
     distance = st.number_input("Distance Travelled (km):", value=50.0, min_value=0.0)
-
+    lat_lon_points = [(52.5200, 13.4050), (52.5205, 13.4080), (52.5190, 13.4020)]
+    n_clusters = st.slider("Select Number of Clusters:", 1, 10, 3)
+    
     # Fetch Vehicle Models
     vehicle_models = get_vehicle_models()
     if vehicle_models:
@@ -165,8 +217,34 @@ def main():
             # Visualization with Plotly
             fig = px.bar(df, x="Pollutant", y="Concentration (µg/m³)", title="Pollutant Concentrations")
             st.plotly_chart(fig)
+
+        st.subheader("2. Pollution Trends Prediction")
+        historical_data = fetch_historical_pollution(lat, lon)
+        if historical_data:
+            df = preprocess_time_series_data(historical_data)
+            st.write(df)
+            fig = px.line(df, x='timestamp', y='pm2_5', title="Historical PM2.5 Levels")
+            st.plotly_chart(fig)
+            forecast = predict_trends(df)
+            st.subheader("Predicted PM2.5 Levels")
+            st.line_chart(forecast)
+
+        st.subheader("3. High-Emission Zones Clustering")
+        pollution_data = create_pollution_data(lat_lon_points)
+        clustered_data, cluster_centers = apply_clustering(pollution_data, n_clusters)
+        st.write(clustered_data)
+        fig = px.scatter_mapbox(
+            clustered_data,
+            lat="latitude",
+            lon="longitude",
+            color="cluster",
+            size="pm2_5",
+            mapbox_style="carto-positron",
+            title="Clustered High-Emission Zones"
+        )
+        st.plotly_chart(fig)
         
-        st.subheader("2. Real-Time AQI and Recommendations")
+        st.subheader("4. Real-Time AQI and Recommendations")
         aqi = get_aqicn_aqi(city)
         if aqi:
             st.write(f"Air Quality Index (AQI) in {city}: {aqi}")
@@ -177,7 +255,7 @@ def main():
             else:
                 st.error("Air quality is unhealthy. Limit outdoor activities.")
 
-        st.subheader("3. Carbon Intensity of Electricity Grid")
+        st.subheader("5. Carbon Intensity of Electricity Grid")
         carbon_intensity = get_electricity_carbon_intensity(zone)
         if carbon_intensity:
             st.success(f"Carbon Intensity in {zone}: {carbon_intensity} gCO₂/kWh")
@@ -187,18 +265,23 @@ def main():
                          title="Carbon Intensity Proportion")
             st.plotly_chart(fig)
 
-        st.subheader("4. Carbon Emissions from Vehicle Travel")
+        st.subheader("6. Carbon Emissions from Vehicle Travel")
         if vehicle_model_id:
             emissions = calculate_vehicle_emissions(distance, vehicle_model_id)
             if emissions:
                 st.success(f"CO₂ Emissions for {distance} km in {selected_vehicle}: {emissions:.2f} kg CO₂")
                 # Visualization
-                fig = px.bar(x=[selected_vehicle], y=[emissions], title="CO₂ Emissions", labels={"x": "Vehicle", "y": "Emissions (kg CO₂)"})
+                fig = px.bar(
+                    x=[selected_vehicle], 
+                    y=[emissions], 
+                    title="CO₂ Emissions", 
+                    labels={"x": "Vehicle", "y": "Emissions (kg CO₂)"}
+                 )
                 st.plotly_chart(fig)
         else:
             st.error("Please select a valid vehicle model to calculate emissions.")
 
-        st.subheader("5. Nearby EV Charging Stations")
+        st.subheader("7. Nearby EV Charging Stations")
         ev_stations = get_ev_charging_stations(lat, lon)
         if ev_stations:
             st.write("Nearby EV Charging Stations:")
